@@ -1,0 +1,166 @@
+services:
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    hostname: kafka
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - app-network
+
+  kafka-topics-setup:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      kafka:
+        condition: service_healthy # condition checking for a continuously running service 
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+    entrypoint:  >
+      bash -c "
+        echo 'Waiting for Kafka to be ready...'
+        until kafka-topics --bootstrap-server kafka:9092 --list; do
+          sleep 2
+        done
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --replication-factor 1 --partitions 4 --topic stock-raw-data
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --replication-factor 1 --partitions 4 --topic stock-indicators
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --replication-factor 1 --partitions 4 --topic stock-analytics
+        echo 'Successfully created Kafka topics.'
+      "
+    networks:
+      - app-network
+
+  kafka-producer:
+    build:
+      context: .
+      dockerfile: ./kafka-producer/Dockerfile
+    depends_on:
+      kafka-topics-setup:
+        condition: service_completed_successfully # condition checking for one-time script
+    networks:
+      - app-network
+
+  postgres:
+      image: postgres:14
+      container_name: postgres
+      ports:
+        - "5432:5432"
+      environment:
+        POSTGRES_PASSWORD: postgres
+        POSTGRES_USER: postgres
+        POSTGRES_DB: postgres
+      volumes:
+        - postgres-data:/var/lib/postgresql/data
+        # sql initializing script
+        - ./sql:/docker-entrypoint-initdb.d
+      networks:
+        - app-network
+
+  # Flink JobManager
+  jobmanager:
+    image: apache/flink:1.14.6-scala_2.12-java11
+    container_name: jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=jobmanager
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        state.backend: filesystem
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      # bind compiled .jar to container
+      - ./flink-processor/target:/opt/flink/usrlib
+    networks:
+      - app-network
+
+  # Flink TaskManager
+  taskmanager:
+    image: apache/flink:1.14.6-scala_2.12-java11
+    container_name: taskmanager
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=jobmanager
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        state.backend: filesystem
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+    networks:
+      - app-network
+
+  flink-job-submitter:
+    image: apache/flink:1.14.6-scala_2.12-java11
+    depends_on:
+      - jobmanager
+      - taskmanager
+      - kafka-topics-setup
+    entrypoint: >
+      bash -c "
+        echo 'Waiting for JobManager to be ready...'
+        until curl -s jobmanager:8081/overview > /dev/null; do
+          sleep 5
+        done
+        echo 'Submitting Flink job...'
+        flink run -m jobmanager:8081 -c StockProcessor /opt/flink/usrlib/stock-analytics-1.0-SNAPSHOT.jar
+        echo 'Flink job submitted successfully.'
+      "
+    volumes:
+      - ./flink-processor/target:/opt/flink/usrlib
+    networks:
+      - app-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+    depends_on:
+      - postgres
+    networks:
+      - app-network
+
+volumes:
+  kafka-data:
+  postgres-data:
+  flink-checkpoints:
+
+networks:
+  app-network:
+    driver: bridge

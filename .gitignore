@@ -1,0 +1,19 @@
+# Maven build directories and files
+target/
+dependency-reduced-pom.xml
+*.jar
+*.war
+*.ear
+*.class
+.classpath
+.project
+.settings/
+
+# Logs and databases
+*.log
+stock_data_collector.log
+*.sqlite
+*.db
+
+dummy.txt
+dirty.py
