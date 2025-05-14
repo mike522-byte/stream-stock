@@ -1,7 +1,6 @@
 # Real-time Stock Data Analytics System
 
 <p style="text-align: center"><img src="https://github.com/user-attachments/assets/f3156159-0af5-4f98-9dd2-552691ce8580"></p>
-![stream-stock drawio (1)](https://github.com/user-attachments/assets/f3156159-0af5-4f98-9dd2-552691ce8580)
 
 A real-time stock data analytics system built with Apache Flink, Kafka, PostgreSQL, and Grafana. This system fetches real-time stock data from Alpha Vantage API, transfers data through Kafka, processes streams with Flink, stores results in PostgreSQL, and visualizes them using Grafana.
 
